@@ -1,0 +1,23 @@
+backup_folder: Backup
+
+searched_text:
+  text_backup: gbak:closing file, committing, and finishing.
+  text_restore: gbak:finishing, closing, and going home
+
+email_for_send:
+  server_url:
+  server_port:
+  user:
+  password:
+  mail_to:
+    - 
+
+db:
+  - name:
+    path:
+    file:
+    weekday: -1
+  - name:
+    path:
+    file:
+    weekday: 1
