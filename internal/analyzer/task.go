@@ -18,21 +18,67 @@ const (
 	restoreLog = "log_restore.txt"
 )
 
-var (
-	backupCount  int
-	restoreCount int
-)
+type Stats struct {
+	BackupCount  int
+	RestoreCount int
+	DBChecked    int
+}
 
-type TextForSendError struct {
-	Subject string
-	Body    string
+type CheckResult struct {
+	Error     error
+	NeedEmail bool
+	Subject   string
+	Body      string
 }
 
 func Do(cfg *config.Config) {
 	br := strings.Builder{}
+	stats := &Stats{}
 
-	// инфа о жётских дисках
+	// информация о дисках
 	br.WriteString("Диски:\n")
+	collectDriveInfo(cfg, &br)
+	br.WriteString("\n")
+
+	emailSender := exchangesmtp.NewQuickSender(
+		cfg.EFS.Username(),
+		cfg.EFS.Password,
+		cfg.EFS.Server(),
+		cfg.EFS.User,
+		cfg.EFS.MailTo,
+	)
+
+	wd := int(time.Now().Weekday())
+
+	// проверка всех баз данных
+	for _, db := range cfg.DB {
+		if db.Weekday >= 0 && db.Weekday != wd {
+			continue
+		}
+
+		log.Println("Checking DB:", db.Name)
+		result := checkDB(db.Name, db.File, db.Path, cfg.ST, &br, stats)
+
+		// отправляем email если нужно
+		if result.NeedEmail {
+			if err := emailSender.Send(result.Subject, result.Body); err != nil {
+				log.Printf("Error sending email: %v\n", err)
+				log.Printf("Email content - Subject: %s\nBody: %s\n", result.Subject, result.Body)
+			}
+		}
+
+		if result.Error != nil {
+			log.Printf("Error checking DB %s: %v\n", db.Name, result.Error)
+		}
+
+		stats.DBChecked++
+	}
+
+	// отправляем итоговый отчет
+	sendSummaryEmail(emailSender, stats, &br)
+}
+
+func collectDriveInfo(cfg *config.Config, br *strings.Builder) {
 	var paths []string
 	for _, el := range cfg.DB {
 		paths = append(paths, el.Path)
@@ -41,137 +87,137 @@ func Do(cfg *config.Config) {
 	drives := getDrives(paths)
 
 	for _, drive := range drives {
-		err := drive.SetInfo()
-		if err != nil {
-			log.Printf("drive.SetInfo() err: %v\n", err)
-			return
-		}
-
-		br.WriteString(fmt.Sprintf("\t%s\n", drive.String()))
-	}
-	br.WriteString("\n")
-
-	emailSender := exchangesmtp.NewQuickSender(cfg.EFS.Username(), cfg.EFS.Password, cfg.EFS.Server(), cfg.EFS.User, cfg.EFS.MailTo)
-
-	wd := int(time.Now().Weekday())
-
-	backupCount = 0
-	restoreCount = 0
-
-	dbChecked := 0
-	for _, el := range cfg.DB {
-		if el.Weekday >= 0 && el.Weekday != wd {
+		if err := drive.SetInfo(); err != nil {
+			log.Printf("Warning: failed to get info for drive %s: %v\n", drive.Name, err)
+			br.WriteString(fmt.Sprintf("\t%s: ошибка получения информации\n", drive.Name))
 			continue
 		}
-
-		log.Println(el.Name)
-
-		te, err := byDB(el.Name, el.File, el.Path, cfg.ST, &br)
-		if te != nil {
-			err = emailSender.Send(te.Subject, te.Body)
-			if err != nil {
-				log.Println("Error sending email: ", err)
-				log.Println(fmt.Sprintf("Email %s:\n%s", te.Subject, te.Body))
-			}
-		}
-
-		if err != nil {
-			log.Println("Для БД " + el.Name + ":\n" + err.Error())
-		}
-
-		dbChecked++
+		br.WriteString(fmt.Sprintf("\t%s\n", drive.String()))
 	}
+}
 
+func sendSummaryEmail(sender *exchangesmtp.QuickSender, stats *Stats, br *strings.Builder) {
 	if br.Len() > 0 {
-		sbj := fmt.Sprintf("бэкапы баз данных (БД %d: бэкапов %d, ресторов %d)", dbChecked, backupCount, restoreCount)
-		err := emailSender.Send(sbj, br.String())
-		if err != nil {
-			log.Println("Error sending email: ", err)
-			log.Println(fmt.Sprintf("Email %s:\n%s", sbj, br.String()))
+		subject := fmt.Sprintf(
+			"бэкапы баз данных (БД %d: бэкапов %d, ресторов %d)",
+			stats.DBChecked,
+			stats.BackupCount,
+			stats.RestoreCount,
+		)
+
+		if err := sender.Send(subject, br.String()); err != nil {
+			log.Printf("Error sending summary email: %v\n", err)
+			log.Printf("Summary email - Subject: %s\nBody: %s\n", subject, br.String())
 		}
 	}
 }
 
-func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder) (*TextForSendError, error) {
-	// проверка на существование fdb файла
+func checkDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder, stats *Stats) CheckResult {
+	result := CheckResult{}
+
+	// проверка существования fdb файла
 	fdbFile := filepath.Join(path, file+".fdb")
 	if _, err := os.Stat(fdbFile); errors.Is(err, os.ErrNotExist) {
-		return &TextForSendError{
-			Subject: fmt.Sprintf("Нет файла бэкапа БД %s", nameDB),
-			Body:    fmt.Sprintf("Не найден файл %s", fdbFile),
-		}, err
-	}
-
-	// анализ бэкапа
-	backupText, err := readLogfile(filepath.Join(path, backupLog))
-	if err != nil {
-		subject := fmt.Sprintf("Ошибка чтения лога бэкапа %s", nameDB)
-		body := fmt.Sprintf("Ошибка: %s", err)
-		if os.IsNotExist(err) {
-			body = "Нет файла лога бэкапа"
-		}
-		return &TextForSendError{
-			subject,
-			body,
-		}, err
+		result.NeedEmail = true
+		result.Subject = fmt.Sprintf("Нет файла бэкапа БД %s", nameDB)
+		result.Body = fmt.Sprintf("Не найден файл %s", fdbFile)
+		result.Error = err
+		return result
 	}
 
 	br.WriteString("БД " + nameDB + "\n")
 
-	// бэкап завершился с ошибкой
-	if !strings.Contains(backupText, st.Backup) {
-		log.Println("Backup fail for " + nameDB)
-		br.WriteString("\tОшибка бэкапа!\n")
-
-		return &TextForSendError{
-			"Ошибка при бэкапе " + nameDB,
-			"Конец лога бэкапа базы " + nameDB + ":\n" + backupText,
-		}, nil
+	// проверка бэкапа
+	backupResult := checkBackup(nameDB, file, path, st.Backup, br)
+	if backupResult.NeedEmail {
+		return backupResult
+	}
+	if backupResult.Error == nil {
+		stats.BackupCount++
 	}
 
-	// бэкап прошёл успешно
-	log.Println("Backup succeed for " + nameDB)
-	br.WriteString("\tУспешный бэкап\n")
-	fs, err := collectFileStat(filepath.Join(path, file+".fbk"))
-	if err != nil {
-		log.Printf("Get files stat for %s error: %v\n", file, err)
+	// проверка рестора
+	restoreResult := checkRestore(nameDB, file, path, st.Restore, br)
+	if restoreResult.NeedEmail {
+		return restoreResult
 	}
-	br.WriteString(fs)
-	backupCount += 1
-
-	// анализ рестора
-	restoreText, err := readLogfile(filepath.Join(path, restoreLog))
-	if err != nil {
-		subject := fmt.Sprintf("Ошибка чтения лога рестора %s", nameDB)
-		body := fmt.Sprintf("Ошибка: %s", err)
-		if os.IsNotExist(err) {
-			body = "Нет файла лога рестора"
-		}
-		return &TextForSendError{
-			subject,
-			body,
-		}, err
+	if restoreResult.Error == nil {
+		stats.RestoreCount++
 	}
-
-	if !strings.Contains(restoreText, st.Restore) {
-		log.Println("Restore fail for " + nameDB)
-		br.WriteString("\tОшибка рестора!\n")
-		return &TextForSendError{
-			"Ошибка при ресторе " + nameDB,
-			"Конец лога рестора базы " + nameDB + ":\n" + restoreText,
-		}, nil
-	}
-
-	log.Println("Restore succeed for " + nameDB)
-	br.WriteString("\tУспешный рестор\n")
-	fs, err = collectFileStat(fdbFile)
-	if err != nil {
-		log.Printf("Get files stat for %s error: %v\n", file, err)
-	}
-	br.WriteString(fs)
-	restoreCount += 1
 
 	br.WriteString("\n\n")
+	return result
+}
 
-	return nil, nil
+func checkBackup(nameDB, file, path, searchText string, br *strings.Builder) CheckResult {
+	result := CheckResult{}
+
+	backupText, err := readLogfile(filepath.Join(path, backupLog))
+	if err != nil {
+		result.NeedEmail = true
+		result.Subject = fmt.Sprintf("Ошибка чтения лога бэкапа %s", nameDB)
+		result.Body = fmt.Sprintf("Ошибка: %s", err)
+		if os.IsNotExist(err) {
+			result.Body = "Нет файла лога бэкапа"
+		}
+		result.Error = err
+		return result
+	}
+
+	if !strings.Contains(backupText, searchText) {
+		log.Println("Backup failed for " + nameDB)
+		br.WriteString("\tОшибка бэкапа!\n")
+		result.NeedEmail = true
+		result.Subject = "Ошибка при бэкапе " + nameDB
+		result.Body = "Конец лога бэкапа базы " + nameDB + ":\n" + backupText
+		return result
+	}
+
+	log.Println("Backup succeeded for " + nameDB)
+	br.WriteString("\tУспешный бэкап\n")
+
+	if fs, err := collectFileStat(filepath.Join(path, file+".fbk")); err != nil {
+		log.Printf("Get file stat for %s error: %v\n", file, err)
+	} else {
+		br.WriteString(fs)
+	}
+
+	return result
+}
+
+func checkRestore(nameDB, file, path, searchText string, br *strings.Builder) CheckResult {
+	result := CheckResult{}
+
+	restoreText, err := readLogfile(filepath.Join(path, restoreLog))
+	if err != nil {
+		result.NeedEmail = true
+		result.Subject = fmt.Sprintf("Ошибка чтения лога рестора %s", nameDB)
+		result.Body = fmt.Sprintf("Ошибка: %s", err)
+		if os.IsNotExist(err) {
+			result.Body = "Нет файла лога рестора"
+		}
+		result.Error = err
+		return result
+	}
+
+	if !strings.Contains(restoreText, searchText) {
+		log.Println("Restore failed for " + nameDB)
+		br.WriteString("\tОшибка рестора!\n")
+		result.NeedEmail = true
+		result.Subject = "Ошибка при ресторе " + nameDB
+		result.Body = "Конец лога рестора базы " + nameDB + ":\n" + restoreText
+		return result
+	}
+
+	log.Println("Restore succeeded for " + nameDB)
+	br.WriteString("\tУспешный рестор\n")
+
+	fdbFile := filepath.Join(path, file+".fdb")
+	if fs, err := collectFileStat(fdbFile); err != nil {
+		log.Printf("Get file stat for %s error: %v\n", file, err)
+	} else {
+		br.WriteString(fs)
+	}
+
+	return result
 }
