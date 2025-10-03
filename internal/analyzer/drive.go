@@ -20,7 +20,7 @@ func (d *Drive) SetInfo() error {
 
 	drivePtr, err := windows.UTF16PtrFromString(d.Name)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to convert drive name: %w", err)
 	}
 
 	err = windows.GetDiskFreeSpaceEx(
@@ -31,7 +31,7 @@ func (d *Drive) SetInfo() error {
 	)
 
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get disk space for %s: %w", d.Name, err)
 	}
 
 	d.Free = freeBytes
