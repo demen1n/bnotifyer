@@ -2,13 +2,15 @@ package analyzer
 
 import (
 	"bnotifyer/internal/config"
+	"errors"
 	"fmt"
-	"github.com/demen1n/exchange-smtp"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/demen1n/exchange-smtp"
 )
 
 const (
@@ -21,44 +23,56 @@ var (
 	restoreCount int
 )
 
-type TextForSend struct {
+type TextForSendError struct {
 	Subject string
 	Body    string
 }
 
 func Do(cfg *config.Config) {
-	tts := collectInfo(cfg.DB, cfg.ST)
-	emailSender := exchangesmtp.NewQuickSender(cfg.EFS.Username(), cfg.EFS.Password, cfg.EFS.Server(), cfg.EFS.User, cfg.EFS.MailTo)
-	var err error
-
-	for _, t := range tts {
-		err = emailSender.Send(t.Subject, t.Body)
-		if err != nil {
-			log.Println("Error sending email: ", err)
-			log.Println(fmt.Sprintf("Email %s:\n%s", t.Subject, t.Body))
-		}
-	}
-}
-
-func collectInfo(db []config.Database, st config.SearchedText) []TextForSend {
 	br := strings.Builder{}
-	tts := make([]TextForSend, 0)
+
+	// инфа о жётских дисках
+	br.WriteString("Диски:\n")
+	var paths []string
+	for _, el := range cfg.DB {
+		paths = append(paths, el.Path)
+	}
+
+	drives := getDrives(paths)
+
+	for _, drive := range drives {
+		err := drive.SetInfo()
+		if err != nil {
+			log.Printf("drive.SetInfo() err: %v\n", err)
+			return
+		}
+
+		br.WriteString(fmt.Sprintf("\t%s\n", drive.String()))
+	}
+	br.WriteString("\n")
+
+	emailSender := exchangesmtp.NewQuickSender(cfg.EFS.Username(), cfg.EFS.Password, cfg.EFS.Server(), cfg.EFS.User, cfg.EFS.MailTo)
 
 	wd := int(time.Now().Weekday())
 
 	backupCount = 0
 	restoreCount = 0
+
 	dbChecked := 0
-	for _, el := range db {
+	for _, el := range cfg.DB {
 		if el.Weekday >= 0 && el.Weekday != wd {
 			continue
 		}
 
 		log.Println(el.Name)
 
-		te, err := byDB(el.Name, el.File, el.Path, st, &br)
+		te, err := byDB(el.Name, el.File, el.Path, cfg.ST, &br)
 		if te != nil {
-			tts = append(tts, *te)
+			err = emailSender.Send(te.Subject, te.Body)
+			if err != nil {
+				log.Println("Error sending email: ", err)
+				log.Println(fmt.Sprintf("Email %s:\n%s", te.Subject, te.Body))
+			}
 		}
 
 		if err != nil {
@@ -70,13 +84,24 @@ func collectInfo(db []config.Database, st config.SearchedText) []TextForSend {
 
 	if br.Len() > 0 {
 		sbj := fmt.Sprintf("бэкапы баз данных (БД %d: бэкапов %d, ресторов %d)", dbChecked, backupCount, restoreCount)
-		tts = append(tts, TextForSend{Subject: sbj, Body: br.String()})
+		err := emailSender.Send(sbj, br.String())
+		if err != nil {
+			log.Println("Error sending email: ", err)
+			log.Println(fmt.Sprintf("Email %s:\n%s", sbj, br.String()))
+		}
 	}
-
-	return tts
 }
 
-func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder) (*TextForSend, error) {
+func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder) (*TextForSendError, error) {
+	// проверка на существование fdb файла
+	fdbFile := filepath.Join(path, file+".fdb")
+	if _, err := os.Stat(fdbFile); errors.Is(err, os.ErrNotExist) {
+		return &TextForSendError{
+			Subject: fmt.Sprintf("Нет файла бэкапа БД %s", nameDB),
+			Body:    fmt.Sprintf("Не найден файл %s", fdbFile),
+		}, err
+	}
+
 	// анализ бэкапа
 	backupText, err := readLogfile(filepath.Join(path, backupLog))
 	if err != nil {
@@ -85,7 +110,7 @@ func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder
 		if os.IsNotExist(err) {
 			body = "Нет файла лога бэкапа"
 		}
-		return &TextForSend{
+		return &TextForSendError{
 			subject,
 			body,
 		}, err
@@ -98,7 +123,7 @@ func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder
 		log.Println("Backup fail for " + nameDB)
 		br.WriteString("\tОшибка бэкапа!\n")
 
-		return &TextForSend{
+		return &TextForSendError{
 			"Ошибка при бэкапе " + nameDB,
 			"Конец лога бэкапа базы " + nameDB + ":\n" + backupText,
 		}, nil
@@ -122,7 +147,7 @@ func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder
 		if os.IsNotExist(err) {
 			body = "Нет файла лога рестора"
 		}
-		return &TextForSend{
+		return &TextForSendError{
 			subject,
 			body,
 		}, err
@@ -131,7 +156,7 @@ func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder
 	if !strings.Contains(restoreText, st.Restore) {
 		log.Println("Restore fail for " + nameDB)
 		br.WriteString("\tОшибка рестора!\n")
-		return &TextForSend{
+		return &TextForSendError{
 			"Ошибка при ресторе " + nameDB,
 			"Конец лога рестора базы " + nameDB + ":\n" + restoreText,
 		}, nil
@@ -139,7 +164,7 @@ func byDB(nameDB, file, path string, st config.SearchedText, br *strings.Builder
 
 	log.Println("Restore succeed for " + nameDB)
 	br.WriteString("\tУспешный рестор\n")
-	fs, err = collectFileStat(filepath.Join(path, file+".fdb"))
+	fs, err = collectFileStat(fdbFile)
 	if err != nil {
 		log.Printf("Get files stat for %s error: %v\n", file, err)
 	}

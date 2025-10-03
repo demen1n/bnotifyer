@@ -2,12 +2,13 @@ package analyzer
 
 import (
 	"errors"
-	"github.com/djherbis/times"
-	"github.com/inhies/go-bytesize"
 	"log"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/demen1n/go-bytesize"
+	"github.com/djherbis/times"
 )
 
 const maxLength = 512
@@ -56,13 +57,14 @@ func getFileTime(path string) (bt *time.Time, ct *time.Time, err error) {
 
 func collectFileStat(filepath string) (string, error) {
 	br := strings.Builder{}
+	bytesize.SetLocale(bytesize.LocaleRU)
 
 	fi, err := os.Stat(filepath)
 	if err != nil {
 		return "", errors.New("cannot read file stat")
 	} else {
 		size := bytesize.New(float64(fi.Size()))
-		br.WriteString("\t\t" + size.String() + ", " + size.Format("%.0f", "byte", true) + "\n")
+		br.WriteString("\t\t" + size.String() + ", " + size.Format("%.0f ", "byte", true) + "\n")
 	}
 
 	// проверяем время

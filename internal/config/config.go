@@ -1,9 +1,10 @@
 package config
 
 import (
-	"github.com/ilyakaznacheev/cleanenv"
 	"strconv"
 	"strings"
+
+	"github.com/ilyakaznacheev/cleanenv"
 )
 
 // TODO: насыпать проверок того, что конфиг не пустой
@@ -33,18 +34,17 @@ func (efs *EmailForSend) Server() string {
 	return efs.ServerAddress + ":" + strconv.Itoa(efs.ServerPort)
 }
 
-type Database struct {
-	Name    string `yaml:"name"`
-	Path    string `yaml:"path"`
-	File    string `yaml:"file"`
-	Weekday int    `yaml:"weekday"`
-}
-
 type Config struct {
-	BackupFolder string       `yaml:"backup_folder"`
-	ST           SearchedText `yaml:"searched_text"`
-	EFS          EmailForSend `yaml:"email_for_send"`
-	DB           []Database   `yaml:"db"`
+	ST SearchedText `yaml:"searched_text"`
+
+	EFS EmailForSend `yaml:"email_for_send"`
+
+	DB []struct {
+		Name    string `yaml:"name"`
+		Path    string `yaml:"path"`
+		File    string `yaml:"file"`
+		Weekday int    `yaml:"weekday"`
+	} `yaml:"db"`
 }
 
 func New(path string) (*Config, error) {
