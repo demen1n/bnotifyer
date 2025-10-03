@@ -80,17 +80,17 @@ func collectFileStat(filepath string) (string, error) {
 
 	fi, err := os.Stat(filepath)
 	if err != nil {
-		return "", errors.New("cannot read file stat")
-	} else {
-		size := bytesize.New(float64(fi.Size()))
-		br.WriteString("\t\t" + size.String() + ", " + size.Format("%.0f ", "byte", true) + "\n")
+		return "", fmt.Errorf("cannot read file stat for %s: %w", filepath, err)
 	}
 
-	// проверяем время
+	size := bytesize.New(float64(fi.Size()))
+	br.WriteString("\t\t" + size.String() + ", " + size.Format("%.0f ", "byte", true) + "\n")
+
 	bt, ct, err := getFileTime(filepath)
 	if err != nil {
-		return "", errors.New("cannot read file time")
+		return "", fmt.Errorf("cannot read file time for %s: %w", filepath, err)
 	}
+
 	if bt != nil {
 		br.WriteString("\t\tсоздано " + bt.Format("02.01.2006 15:04") + "\n")
 	}
