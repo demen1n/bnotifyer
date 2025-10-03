@@ -1,5 +1,8 @@
 # bnotifyer
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/demen1n/bnotifyer)](https://goreportcard.com/report/github.com/demen1n/bnotifyer)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 A monitoring tool for Firebird database backup and restore operations with email notifications.
 
 ## Features
@@ -46,7 +49,7 @@ db:
     path: "D:\\Backups\\ProdDB"
     file: "proddb"
     weekday: 1  # 0=Sunday, 1=Monday, etc. Use -1 for daily checks
-  
+
   - name: "Test DB"
     path: "D:\\Backups\\TestDB"
     file: "testdb"
