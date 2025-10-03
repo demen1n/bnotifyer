@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -19,19 +20,37 @@ func readLogfile(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
-
-	buf := make([]byte, maxLength)
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("Error closing file %s: %v\n", filePath, cerr)
+		}
+	}()
 
 	stat, err := file.Stat()
 	if err != nil {
 		return "", err
 	}
 
-	start := stat.Size() - maxLength
+	fileSize := stat.Size()
+	if fileSize == 0 {
+		return "", errors.New("file is empty")
+	}
+
+	var start int64
+	var readSize int
+
+	if fileSize < maxLength {
+		start = 0
+		readSize = int(fileSize)
+	} else {
+		start = fileSize - maxLength
+		readSize = maxLength
+	}
+
+	buf := make([]byte, readSize)
 	_, err = file.ReadAt(buf, start)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
 	return string(buf), nil
