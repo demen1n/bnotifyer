@@ -12,26 +12,24 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			log.Printf("Error closing log file: %v\n", cerr)
+		}
+	}()
 	log.SetOutput(f)
 
-	// load config
-	var cfg *config.Config
-	cfg, err = config.New("config.yml")
+	log.Println("=== Starting bnotifyer ===")
+
+	cfg, err := config.New("config.yml")
 	if err != nil {
 		log.Printf("Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
 
-	if len(cfg.ST.Backup) == 0 {
-		log.Printf("no backup config\n")
-		os.Exit(1)
-	}
-
-	if len(cfg.ST.Restore) == 0 {
-		log.Printf("no restore config\n")
-		os.Exit(1)
-	}
+	log.Printf("Loaded config: %d databases configured\n", len(cfg.DB))
 
 	analyzer.Do(cfg)
+
+	log.Println("=== Finished bnotifyer ===")
 }
